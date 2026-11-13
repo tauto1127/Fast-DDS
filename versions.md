@@ -1,6 +1,6 @@
 Forthcoming
 -----------
-* Refresh Simple Discovery built-in endpoint locators when a known participant advertises new metatraffic locators.
+* Refresh Simple Discovery built-in SPDP and SEDP endpoint locators when a known participant advertises new metatraffic locators.
 
 
 

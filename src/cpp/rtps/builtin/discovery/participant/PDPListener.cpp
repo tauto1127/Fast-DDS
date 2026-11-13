@@ -22,8 +22,8 @@
 #include <fastdds/dds/log/Log.hpp>
 
 #include <fastdds/rtps/builtin/discovery/endpoint/EDP.h>
-#include <fastdds/rtps/builtin/discovery/endpoint/EDPSimple.h>
 #include <fastdds/rtps/builtin/discovery/participant/PDP.h>
+#include <fastdds/rtps/builtin/discovery/participant/PDPSimple.h>
 #include <fastdds/rtps/common/LocatorListComparisons.hpp>
 #include <fastdds/rtps/history/ReaderHistory.h>
 #include <fastdds/rtps/participant/ParticipantDiscoveryInfo.h>
@@ -200,13 +200,13 @@ void PDPListener::process_alive_data(
     }
     else
     {
-        EDPSimple* edp_simple = nullptr;
+        PDPSimple* pdp_simple = nullptr;
         bool metatraffic_changed = false;
         if (parent_pdp_->getRTPSParticipant()->getAttributes().builtin.discovery_config.discoveryProtocol ==
                 DiscoveryProtocol_t::SIMPLE)
         {
-            edp_simple = dynamic_cast<EDPSimple*>(parent_pdp_->mp_EDP);
-            metatraffic_changed = edp_simple &&
+            pdp_simple = dynamic_cast<PDPSimple*>(parent_pdp_);
+            metatraffic_changed = pdp_simple &&
                     (!(old_data->metatraffic_locators.unicast == new_data.metatraffic_locators.unicast) ||
                     !(old_data->metatraffic_locators.multicast == new_data.metatraffic_locators.multicast));
         }
@@ -217,8 +217,8 @@ void PDPListener::process_alive_data(
         reader->getMutex().unlock();
         if (metatraffic_changed)
         {
-            // Refresh the existing built-in endpoints without resetting their reliability state.
-            edp_simple->assignRemoteEndpoints(*old_data, false);
+            // Point the existing built-in SPDP/SEDP matches to the new metatraffic locators.
+            pdp_simple->update_remote_builtin_locators(*old_data);
         }
 
 

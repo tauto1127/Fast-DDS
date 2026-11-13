@@ -121,6 +121,16 @@ public:
 
     void update_builtin_locators() override;
 
+    /**
+     * Refresh the locators of the non-secure SPDP and SEDP endpoints already matched with a known remote
+     * participant, after it re-announced different metatraffic locators while keeping the same GUID.
+     * Existing matches are updated in place, so the reliability state of SEDP is kept.
+     * No discovery callback is issued.
+     * @param pdata Participant data containing the new metatraffic locators.
+     */
+    void update_remote_builtin_locators(
+            const ParticipantProxyData& pdata);
+
 private:
 
     void initializeParticipantProxyData(

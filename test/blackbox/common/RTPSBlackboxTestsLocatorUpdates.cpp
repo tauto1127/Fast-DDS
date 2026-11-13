@@ -88,7 +88,7 @@ private:
 };
 
 bool send_spdp(udp::socket& socket, const udp::endpoint& destination, const GuidPrefix_t& prefix,
-        const Locator_t& remote_locator, uint32_t sequence)
+        const Locator_t& remote_locator, uint32_t sequence, bool with_pdp_endpoints = false)
 {
     RTPSParticipantAllocationAttributes allocation;
     ParticipantProxyData pdata(allocation);
@@ -98,6 +98,11 @@ bool send_spdp(udp::socket& socket, const udp::endpoint& destination, const Guid
     pdata.m_availableBuiltinEndpoints = DISC_BUILTIN_ENDPOINT_PUBLICATION_ANNOUNCER |
             DISC_BUILTIN_ENDPOINT_PUBLICATION_DETECTOR | DISC_BUILTIN_ENDPOINT_SUBSCRIPTION_ANNOUNCER |
             DISC_BUILTIN_ENDPOINT_SUBSCRIPTION_DETECTOR;
+    if (with_pdp_endpoints)
+    {
+        pdata.m_availableBuiltinEndpoints |= DISC_BUILTIN_ENDPOINT_PARTICIPANT_ANNOUNCER |
+                DISC_BUILTIN_ENDPOINT_PARTICIPANT_DETECTOR;
+    }
     pdata.m_leaseDuration = Duration_t(60, 0);
     pdata.metatraffic_locators.unicast.push_back(remote_locator);
     pdata.default_locators.unicast.push_back(remote_locator);
@@ -194,6 +199,45 @@ Observed collect(udp::socket& socket, const GuidPrefix_t& local,
     }
     return result;
 }
+// Counts DATA submessages written by the local SPDP writer (entity 0x000100c2) until the timeout,
+// or until the first one if stop_at_first is set.
+int count_spdp(udp::socket& socket, const GuidPrefix_t& local, std::chrono::milliseconds timeout,
+        bool stop_at_first)
+{
+    int count = 0;
+    socket.non_blocking(true);
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::array<unsigned char, 65536> buffer;
+    while (std::chrono::steady_clock::now() < deadline && !(stop_at_first && count > 0))
+    {
+        udp::endpoint from;
+        asio::error_code ec;
+        size_t size = socket.receive_from(asio::buffer(buffer), from, 0, ec);
+        if (ec == asio::error::would_block || ec == asio::error::try_again)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        if (ec || size < 20 || std::memcmp(buffer.data(), "RTPS", 4) ||
+                std::memcmp(buffer.data() + 8, local.value, 12)) continue;
+        for (size_t pos = 20; pos + 4 <= size;)
+        {
+            unsigned kind = buffer[pos];
+            unsigned length = (buffer[pos + 1] & 1) ? buffer[pos + 2] + 256 * buffer[pos + 3] :
+                    256 * buffer[pos + 2] + buffer[pos + 3];
+            size_t start = pos + 4, end = length ? start + length : size;
+            if (end > size || end < start) break;
+            if (kind == 0x15 && start + 12 <= end)
+            {
+                const auto* id = buffer.data() + start + 8;
+                if (id[0] == 0 && id[1] == 1 && id[2] == 0 && id[3] == 0xc2) ++count;
+            }
+            if (end == size) break;
+            pos = end;
+        }
+    }
+    return count;
+}
 } // namespace
 
 TEST(RTPSLocatorUpdates, ExistingBuiltinEndpointsFollowParticipantMetatraffic)
@@ -253,4 +297,56 @@ TEST(RTPSLocatorUpdates, ExistingBuiltinEndpointsFollowParticipantMetatraffic)
     asio::error_code ec;
     while (old_socket.receive_from(asio::buffer(pending), sender, 0, ec), !ec) {}
     EXPECT_TRUE(collect(old_socket, attributes.prefix, std::chrono::seconds(2)).empty());
+}
+
+// A known participant that re-announces a new metatraffic unicast locator (same GUID) must receive our
+// periodic unicast SPDP DATA(p) at the new locator, and no longer at the old one.
+TEST(RTPSLocatorUpdates, SpdpUnicastFollowsParticipantMetatraffic)
+{
+    asio::io_context io;
+    udp::socket old_socket(io, udp::endpoint(asio::ip::address_v4::loopback(), 0));
+    udp::socket new_socket(io, udp::endpoint(asio::ip::address_v4::loopback(), 0));
+    // Initial peer that is neither the old nor the new locator, so fixed-locator announcements do not interfere.
+    udp::socket peer_socket(io, udp::endpoint(asio::ip::address_v4::loopback(), 0));
+    udp::socket reserved(io, udp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const uint16_t old_port = old_socket.local_endpoint().port(), new_port = new_socket.local_endpoint().port();
+    const uint16_t peer_port = peer_socket.local_endpoint().port();
+    const uint16_t local_port = reserved.local_endpoint().port();
+    reserved.close();
+    DiscoveryListener listener;
+    RTPSParticipantAttributes attributes;
+    for (unsigned i = 0; i < 12; ++i) attributes.prefix.value[i] = static_cast<uint8_t>(0x30 + i);
+    attributes.useBuiltinTransports = false;
+    auto transport = std::make_shared<eprosima::fastdds::rtps::UDPv4TransportDescriptor>();
+    transport->interfaceWhiteList.push_back("127.0.0.1");
+    attributes.userTransports.push_back(transport);
+    attributes.builtin.use_WriterLivelinessProtocol = false;
+    attributes.builtin.avoid_builtin_multicast = true;
+    attributes.builtin.discovery_config.leaseDuration_announcementperiod = Duration_t(0, 500000000);
+    attributes.builtin.metatrafficUnicastLocatorList.push_back(locator(local_port));
+    attributes.builtin.initialPeersList.push_back(locator(peer_port));
+    RTPSParticipant* participant = RTPSDomain::createParticipant(0, attributes, &listener);
+    ASSERT_NE(nullptr, participant);
+    ParticipantGuard guard(participant);
+
+    GuidPrefix_t remote;
+    for (unsigned i = 0; i < 12; ++i) remote.value[i] = static_cast<uint8_t>(0xa0 + i);
+    const auto destination = udp::endpoint(asio::ip::address_v4::loopback(), local_port);
+    const auto period = std::chrono::milliseconds(500);
+
+    ASSERT_TRUE(send_spdp(old_socket, destination, remote, locator(old_port), 1, true));
+    ASSERT_TRUE(listener.wait_for(old_port));
+    ASSERT_GT(count_spdp(old_socket, attributes.prefix, 4 * period, true), 0);
+
+    ASSERT_TRUE(send_spdp(new_socket, destination, remote, locator(new_port), 2, true));
+    ASSERT_TRUE(listener.wait_for(new_port));
+    EXPECT_GT(count_spdp(new_socket, attributes.prefix, 4 * period, true), 0);
+    // Drain datagrams already queued before the switch, then check for ongoing stale announcements.
+    std::array<unsigned char, 65536> pending;
+    udp::endpoint sender;
+    asio::error_code ec;
+    old_socket.non_blocking(true);
+    while (old_socket.receive_from(asio::buffer(pending), sender, 0, ec), !ec) {}
+    EXPECT_EQ(0, count_spdp(old_socket, attributes.prefix, 5 * period, false));
+    EXPECT_GT(count_spdp(new_socket, attributes.prefix, 5 * period, false), 0);
 }

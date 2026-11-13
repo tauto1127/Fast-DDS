@@ -526,6 +526,31 @@ void PDPSimple::assignRemoteEndpoints(
     }
 }
 
+void PDPSimple::update_remote_builtin_locators(
+        const ParticipantProxyData& pdata)
+{
+    // Same order as assignRemoteEndpoints (PDP, then EDP), without notifying the discovery listener.
+    auto endpoints = dynamic_cast<fastdds::rtps::SimplePDPEndpoints*>(builtin_endpoints_.get());
+    GUID_t remote_reader_guid{pdata.m_guid.guidPrefix, c_EntityId_SPDPReader};
+    // Only refresh an existing non-secure SPDP match. Secure participants are not matched through the
+    // non-secure SPDP endpoints (see assignRemoteEndpoints), and must not become matched here.
+    if (nullptr != endpoints && endpoints->writer.writer_->matched_reader_is_matched(remote_reader_guid))
+    {
+        // StatelessWriter::matched_reader_add updates the locators of an existing ReaderLocator, and
+        // match_pdp_remote_endpoints resets the unsent changes so that our DATA(p) reaches the new locators.
+        match_pdp_remote_endpoints(pdata, false);
+    }
+
+    // Only Simple EDP (SEDP) is refreshed; static EDP is left untouched.
+    EDPSimple* edp_simple = dynamic_cast<EDPSimple*>(mp_EDP);
+    if (nullptr != edp_simple)
+    {
+        // Matching existing built-in SEDP proxies again updates their locators without resetting their
+        // reliability state.
+        edp_simple->assignRemoteEndpoints(pdata, false);
+    }
+}
+
 void PDPSimple::removeRemoteEndpoints(
         ParticipantProxyData* pdata)
 {
