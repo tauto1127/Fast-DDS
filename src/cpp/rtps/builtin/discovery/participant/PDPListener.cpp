@@ -24,6 +24,7 @@
 #include <fastdds/core/policy/ParameterList.hpp>
 #include <fastdds/dds/log/Log.hpp>
 #include <fastdds/rtps/builtin/data/ParticipantBuiltinTopicData.hpp>
+#include <fastdds/rtps/common/LocatorListComparisons.hpp>
 #include <fastdds/rtps/history/ReaderHistory.hpp>
 #include <fastdds/rtps/participant/ParticipantDiscoveryInfo.hpp>
 #include <fastdds/rtps/participant/RTPSParticipantListener.hpp>
@@ -33,6 +34,7 @@
 #include <rtps/builtin/discovery/endpoint/EDP.h>
 #include <rtps/builtin/discovery/participant/PDP.h>
 #include <rtps/builtin/discovery/participant/PDPEndpoints.hpp>
+#include <rtps/builtin/discovery/participant/PDPSimple.h>
 #include <rtps/network/utils/external_locators.hpp>
 #include <rtps/participant/RTPSParticipantImpl.hpp>
 #include <rtps/resources/TimedEvent.h>
@@ -228,6 +230,10 @@ void PDPListener::process_alive_data(
     }
     else
     {
+        bool metatraffic_changed =
+                !(old_data->metatraffic_locators.unicast == new_data.metatraffic_locators.unicast) ||
+                !(old_data->metatraffic_locators.multicast == new_data.metatraffic_locators.multicast);
+
         old_data->update_data(new_data);
         old_data->is_alive = true;
 
@@ -241,6 +247,16 @@ void PDPListener::process_alive_data(
         if (parent_pdp_->updateInfoMatchesEDP())
         {
             parent_pdp_->mp_EDP->assignRemoteEndpoints(*old_data, true);
+        }
+        else if (metatraffic_changed)
+        {
+            // The remote participant kept its GUID but changed its metatraffic locators (e.g. its IP address
+            // changed). Make the builtin endpoints already matched with it send to the new locators.
+            PDPSimple* pdp_simple = dynamic_cast<PDPSimple*>(parent_pdp_);
+            if (nullptr != pdp_simple)
+            {
+                pdp_simple->update_remote_builtin_locators(*old_data);
+            }
         }
 
         // Copy proxy to be passed forward before releasing PDP mutex

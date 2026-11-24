@@ -128,6 +128,20 @@ public:
 
     void update_builtin_locators() override;
 
+    /**
+     * Refresh the destination locators of the builtin endpoints already matched with a known remote participant,
+     * after it has announced different metatraffic locators while keeping the same GUID.
+     *
+     * Only the existing matches of the non-secure SPDP writer and of the Simple EDP endpoints are updated.
+     * They are updated in place, so the reliability state of the Simple EDP endpoints is kept, and neither new
+     * matches nor discovery callbacks are issued.
+     * Participants with security enabled are left untouched.
+     *
+     * @param pdata Proxy data of the remote participant, already holding the new metatraffic locators.
+     */
+    void update_remote_builtin_locators(
+            const ParticipantProxyData& pdata);
+
 private:
 
     void initializeParticipantProxyData(
